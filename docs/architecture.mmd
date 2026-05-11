@@ -1,0 +1,16 @@
+flowchart LR
+  U[User Browser] -->|HTTP| N[Nginx 80]
+  N -->|/| F[Frontend Nextjs]
+  N -->|/api/*| B[Backend FastAPI]
+
+  subgraph "Backend"
+    B --> A[LangGraph Agent]
+    A --> T1[hh_vacancy_parser_tool]
+    A --> T2[interview_knowledge_search_tool]
+    A --> T3[question_generator_tool]
+    A --> T4[feedback_tool]
+    T2 --> Q[(Qdrant)]
+  end
+
+  KB[(Markdown KB)] -->|ingest| Q
+
