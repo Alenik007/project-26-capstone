@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Optional, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -13,7 +12,7 @@ from app.agents.prompts import SYSTEM_PROMPT
 from app.core.config import get_settings
 from app.rag.retriever import interview_knowledge_search_tool
 from app.tools.feedback_tool import feedback_tool
-from app.tools.hh_parser import hh_vacancy_parser_tool
+from app.tools.hh_parser import hh_vacancy_parser_tool, is_headhunter_job_url
 from app.tools.question_generator import question_generator_tool
 
 
@@ -25,14 +24,88 @@ class SessionState(TypedDict, total=False):
     current_question_index: int
     answers: list[dict]
     feedback: list[dict]
+    interview_active: bool
 
 
-_HH_URL_RE = re.compile(r"(https?://(?:www\.)?hh\.ru/vacancy/\d+)")
+_ANY_HTTP_URL = re.compile(r"(https?://[^\s\]\)\"'<>]+)")
 
 
-def _extract_hh_url(text: str) -> Optional[str]:
-    m = _HH_URL_RE.search(text or "")
-    return m.group(1) if m else None
+def _extract_hh_job_url(text: str) -> Optional[str]:
+    for m in _ANY_HTTP_URL.finditer(text or ""):
+        cand = m.group(1).rstrip(".,;)")
+        if is_headhunter_job_url(cand):
+            return cand.split("#")[0]
+    return None
+
+
+def _looks_like_vacancy_paste(text: str) -> bool:
+    t = (text or "").strip()
+    if len(t) < 140:
+        return False
+    if _ANY_HTTP_URL.search(t) and len(t) < 450:
+        return False
+    low = t.lower()
+    keys = (
+        "ваканс",
+        "требова",
+        "обязанност",
+        "опыт",
+        "зарплат",
+        "условия",
+        "компетенц",
+        "навык",
+        "образован",
+        "график",
+        "оформлен",
+        "компани",
+        "responsibilit",
+        "requirement",
+    )
+    return sum(1 for k in keys if k in low) >= 2
+
+
+def _wants_start_mock(lower: str) -> bool:
+    return any(
+        p in lower
+        for p in (
+            "начни mock",
+            "начать mock",
+            "start mock",
+            "mock-интервью",
+            "mock интервью",
+            "начать mock-интервью",
+            "начни mock-интервью",
+            "начать интервью",
+            "начни интервью",
+            "мок интервью",
+            "мок-интервью",
+            "начать собесед",
+            "начни собесед",
+        )
+    )
+
+
+def _wants_questions(lower: str) -> bool:
+    if "вопрос" not in lower:
+        return False
+    return any(
+        x in lower
+        for x in (
+            "сгенер",
+            "сгенерируй",
+            "сгенерировать",
+            "придумай",
+            "составь",
+            "накидай",
+            "давай вопрос",
+        )
+    )
+
+
+def _wants_finish(lower: str) -> bool:
+    if not any(x in lower for x in ("заверш", "законч", "останов", "финиш")):
+        return False
+    return any(x in lower for x in ("интерв", "mock", "собесед", "обратн"))
 
 
 def _vacancy_context_text(vacancy: dict) -> str:
@@ -63,6 +136,7 @@ class SessionStore:
                 "current_question_index": 0,
                 "answers": [],
                 "feedback": [],
+                "interview_active": False,
             }
         return self._sessions[session_id]
 
@@ -105,9 +179,9 @@ async def chat(session_id: str, user_message: str) -> str:
     state["messages"].append({"role": "user", "content": user_message})
 
     vacancy = state.get("vacancy") or {}
+    lower = (user_message or "").lower()
 
-    # Heuristic: if message contains hh URL, parse and store vacancy first.
-    url = _extract_hh_url(user_message)
+    url = _extract_hh_job_url(user_message)
     if url:
         try:
             raw = await hh_vacancy_parser_tool.ainvoke({"url": url})
@@ -118,56 +192,40 @@ async def chat(session_id: str, user_message: str) -> str:
         except Exception:
             pass
 
-    # If user asks to start interview and we have questions, ask current question.
-    lower = (user_message or "").lower()
-    if "начни mock" in lower or "начать mock" in lower or "start mock" in lower:
-        qs = state.get("interview_questions") or []
-        idx = int(state.get("current_question_index") or 0)
-        if qs and idx < len(qs):
-            q = qs[idx]["question"]
-            assistant_text = f"Начинаем mock-интервью. Вопрос {idx+1}/{len(qs)}:\n\n{q}"
-            state["messages"].append({"role": "assistant", "content": assistant_text})
-            return assistant_text
+    if not url and _looks_like_vacancy_paste(user_message):
+        state["vacancy"] = {
+            "title": "",
+            "company": "",
+            "requirements": "",
+            "responsibilities": user_message.strip()[:14000],
+            "skills": [],
+            "experience": "",
+            "location": "",
+            "salary": "",
+        }
+        vacancy = state["vacancy"]
 
-    # If we are in interview mode (a question was asked and user answers), evaluate and move next.
-    qs = state.get("interview_questions") or []
-    idx = int(state.get("current_question_index") or 0)
-    if qs and idx < len(qs):
-        last_assistant = next((m for m in reversed(state["messages"]) if m["role"] == "assistant"), None)
-        if last_assistant and last_assistant.get("content", "").strip().startswith("Начинаем mock-интервью"):
-            q = qs[idx]["question"]
-            ctx = _vacancy_context_text(vacancy)
-            fb_raw = await feedback_tool.ainvoke({"question": q, "answer": user_message, "vacancy_context": ctx})
-            fb = json.loads(fb_raw)
-            state["answers"].append({"question": q, "answer": user_message})
-            state["feedback"].append(fb)
-            idx += 1
-            state["current_question_index"] = idx
-            if idx < len(qs):
-                next_q = qs[idx]["question"]
-                assistant_text = (
-                    f"Оценка: {fb.get('score', 0)}/10\n"
-                    f"Сильные стороны: {', '.join(fb.get('strengths', []))}\n"
-                    f"Зоны роста: {', '.join(fb.get('weaknesses', []))}\n\n"
-                    f"Следующий вопрос {idx+1}/{len(qs)}:\n\n{next_q}"
-                )
-            else:
-                # summary report
-                scores = [int(x.get("score", 0)) for x in state.get("feedback", []) if isinstance(x, dict)]
-                avg = round(sum(scores) / len(scores), 1) if scores else 0
-                assistant_text = (
-                    "Интервью завершено.\n\n"
-                    f"Общий средний балл: {avg}/10\n"
-                    "Рекомендации: повторите темы, где были слабые места, и подготовьте 2-3 кейса по STAR.\n"
-                )
-            state["messages"].append({"role": "assistant", "content": assistant_text})
-            return assistant_text
+    if _wants_finish(lower):
+        state["interview_active"] = False
+        scores = [int(x.get("score", 0)) for x in state.get("feedback", []) if isinstance(x, dict)]
+        avg = round(sum(scores) / len(scores), 1) if scores else 0
+        assistant_text = (
+            "Итоговый отчёт по подготовке:\n\n"
+            f"- Средний балл: {avg}/10\n"
+            f"- Ответов оценено: {len(scores)}\n"
+            "- Что повторить: темы из слабых мест и требования вакансии.\n"
+        )
+        state["messages"].append({"role": "assistant", "content": assistant_text})
+        return assistant_text
 
-    # If user asks to generate questions, do it.
-    if "сгенерируй" in lower and "вопрос" in lower:
+    if _wants_questions(lower):
+        state["interview_active"] = False
         ctx = _vacancy_context_text(vacancy)
         if not ctx:
-            assistant_text = "Недостаточно данных о вакансии. Пришлите ссылку на hh.ru или вставьте текст вакансии."
+            assistant_text = (
+                "Недостаточно данных о вакансии. Пришлите ссылку на вакансию (hh.ru, hh.kz и региональные сайты) "
+                "или вставьте полный текст вакансии одним сообщением."
+            )
             state["messages"].append({"role": "assistant", "content": assistant_text})
             return assistant_text
 
@@ -190,18 +248,58 @@ async def chat(session_id: str, user_message: str) -> str:
         state["messages"].append({"role": "assistant", "content": assistant_text})
         return assistant_text
 
-    # If user asks to finish interview, provide report.
-    if "заверши" in lower and ("интерв" in lower or "mock" in lower):
-        scores = [int(x.get("score", 0)) for x in state.get("feedback", []) if isinstance(x, dict)]
-        avg = round(sum(scores) / len(scores), 1) if scores else 0
-        assistant_text = (
-            "Итоговый отчёт по подготовке:\n\n"
-            f"- Средний балл: {avg}/10\n"
-            f"- Ответов оценено: {len(scores)}\n"
-            "- Что повторить: темы из слабых мест и требования вакансии.\n"
-        )
+    if _wants_start_mock(lower):
+        qs = state.get("interview_questions") or []
+        idx = int(state.get("current_question_index") or 0)
+        if not qs:
+            assistant_text = (
+                "Сначала сгенерируйте вопросы по вакансии (кнопка «Сгенерировать 10 вопросов» или напишите это в чате), "
+                "либо вставьте ссылку/текст вакансии и снова нажмите «Начать mock-интервью»."
+            )
+            state["messages"].append({"role": "assistant", "content": assistant_text})
+            return assistant_text
+        if idx >= len(qs):
+            state["interview_active"] = False
+            assistant_text = "Список вопросов уже пройден. Сгенерируйте новые вопросы или вставьте другую вакансию."
+            state["messages"].append({"role": "assistant", "content": assistant_text})
+            return assistant_text
+        q = qs[idx]["question"]
+        assistant_text = f"Начинаем mock-интервью. Вопрос {idx+1}/{len(qs)}:\n\n{q}"
+        state["interview_active"] = True
         state["messages"].append({"role": "assistant", "content": assistant_text})
         return assistant_text
+
+    qs = state.get("interview_questions") or []
+    idx = int(state.get("current_question_index") or 0)
+    if state.get("interview_active") and qs and idx < len(qs):
+        if not _wants_questions(lower) and not _wants_start_mock(lower):
+            q = qs[idx]["question"]
+            ctx = _vacancy_context_text(vacancy)
+            fb_raw = await feedback_tool.ainvoke({"question": q, "answer": user_message, "vacancy_context": ctx})
+            fb = json.loads(fb_raw)
+            state["answers"].append({"question": q, "answer": user_message})
+            state["feedback"].append(fb)
+            idx += 1
+            state["current_question_index"] = idx
+            if idx < len(qs):
+                next_q = qs[idx]["question"]
+                assistant_text = (
+                    f"Оценка: {fb.get('score', 0)}/10\n"
+                    f"Сильные стороны: {', '.join(fb.get('strengths', []))}\n"
+                    f"Зоны роста: {', '.join(fb.get('weaknesses', []))}\n\n"
+                    f"Следующий вопрос {idx+1}/{len(qs)}:\n\n{next_q}"
+                )
+            else:
+                state["interview_active"] = False
+                scores = [int(x.get("score", 0)) for x in state.get("feedback", []) if isinstance(x, dict)]
+                avg = round(sum(scores) / len(scores), 1) if scores else 0
+                assistant_text = (
+                    "Интервью завершено.\n\n"
+                    f"Общий средний балл: {avg}/10\n"
+                    "Рекомендации: повторите темы, где были слабые места, и подготовьте 2–3 кейса по STAR.\n"
+                )
+            state["messages"].append({"role": "assistant", "content": assistant_text})
+            return assistant_text
 
     # Default: let ReAct agent decide (autonomous) with available tools.
     agent = get_agent()

@@ -1,4 +1,8 @@
 import type { ReactNode } from "react";
+import { Inter } from "next/font/google";
+import "./globals.css";
+
+const inter = Inter({ subsets: ["latin", "cyrillic"] });
 
 export const metadata = {
   title: "AI Interview Coach",
@@ -9,11 +13,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ru">
       <body
+        className={inter.className}
         style={{
           margin: 0,
-          fontFamily:
-            'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"',
-          background: "#0b1020",
+          background: "#070a12",
           color: "#e7e9ee",
         }}
       >

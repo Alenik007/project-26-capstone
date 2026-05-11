@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 from app.tools.hh_parser import parse_hh_vacancy
@@ -43,4 +41,33 @@ async def test_hh_parser_api_error_fallback_html_error(monkeypatch):
     monkeypatch.setattr("app.tools.hh_parser._fetch_via_html", fake_html)
     data = await parse_hh_vacancy("https://hh.ru/vacancy/123456")
     assert data.get("error")
+
+
+@pytest.mark.asyncio
+async def test_hh_parser_hh_kz_url_api_ok(monkeypatch):
+    async def fake_fetch(vacancy_id: str):
+        assert vacancy_id == "132893028"
+        return {
+            "name": "Test Role",
+            "employer": {"name": "Co"},
+            "description": "x",
+            "key_skills": [],
+            "experience": {"name": "1-3"},
+            "area": {"name": "Усть-Каменогорск"},
+            "salary": None,
+        }
+
+    monkeypatch.setattr("app.tools.hh_parser._fetch_via_api", fake_fetch)
+    url = "https://ust-kamenogorsk.hh.kz/vacancy/132893028?from=applicant_recommended"
+    data = await parse_hh_vacancy(url)
+    assert data.get("title") == "Test Role"
+    assert data.get("company") == "Co"
+
+
+def test_is_headhunter_job_url():
+    from app.tools.hh_parser import is_headhunter_job_url
+
+    assert is_headhunter_job_url("https://ust-kamenogorsk.hh.kz/vacancy/1")
+    assert is_headhunter_job_url("https://hh.ru/vacancy/2")
+    assert not is_headhunter_job_url("https://example.com/vacancy/2")
 

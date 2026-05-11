@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -12,9 +13,23 @@ from langchain_core.tools import tool
 HH_VACANCY_ID_RE = re.compile(r"/vacancy/(\d+)")
 
 
+def is_headhunter_job_url(url: str) -> bool:
+    """True for hh.ru, hh.kz and regional subdomains (e.g. ust-kamenogorsk.hh.kz)."""
+    raw = (url or "").strip()
+    if not raw:
+        return False
+    try:
+        p = urlparse(raw)
+    except Exception:
+        return False
+    if p.scheme not in ("http", "https"):
+        return False
+    host = (p.netloc or "").split("@")[-1].split(":")[0].lower().strip(".")
+    return host == "hh.ru" or host.endswith(".hh.ru") or host == "hh.kz" or host.endswith(".hh.kz")
+
+
 def _is_hh_url(url: str) -> bool:
-    u = (url or "").strip().lower()
-    return u.startswith("https://hh.ru/") or u.startswith("http://hh.ru/") or u.startswith("https://www.hh.ru/") or u.startswith("http://www.hh.ru/")
+    return is_headhunter_job_url(url)
 
 
 def _extract_vacancy_id(url: str) -> Optional[str]:
@@ -77,13 +92,15 @@ async def _fetch_via_html(url: str) -> Dict[str, Any]:
 async def parse_hh_vacancy(url: str) -> dict:
     """
     Best-effort HH vacancy parser.
-    - Validate hh.ru URL
+    - Validate HeadHunter URL (hh.ru / hh.kz / subdomains)
     - Extract vacancy ID
     - Try HH API
     - Fallback to HTML parsing
     """
     if not _is_hh_url(url):
-        return {"error": "Некорректная ссылка. Поддерживаются только вакансии с hh.ru."}
+        return {
+            "error": "Некорректная ссылка. Поддерживаются вакансии HeadHunter: hh.ru, hh.kz и региональные поддомены (например *.hh.kz).",
+        }
 
     vacancy_id = _extract_vacancy_id(url)
     if not vacancy_id:
@@ -131,7 +148,7 @@ async def parse_hh_vacancy(url: str) -> dict:
 @tool
 async def hh_vacancy_parser_tool(url: str) -> str:
     """
-    Parses a vacancy from hh.ru and returns structured vacancy data (JSON string).
+    Parses a vacancy from HeadHunter (hh.ru, hh.kz, …) and returns structured vacancy data (JSON string).
     """
     data = await parse_hh_vacancy(url)
     return json.dumps(data, ensure_ascii=False)
