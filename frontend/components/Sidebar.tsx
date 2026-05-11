@@ -7,8 +7,8 @@ const QUICK_ACTIONS: { label: string; message: string; variant: "primary" | "gho
     variant: "ghost",
   },
   {
-    label: "Сгенерировать 10 вопросов",
-    message: "Сгенерируй 10 вопросов для подготовки к этой вакансии.",
+    label: "Сгенерировать вопросы",
+    message: "Сгенерируй вопросы для подготовки к этой вакансии.",
     variant: "primary",
   },
   {

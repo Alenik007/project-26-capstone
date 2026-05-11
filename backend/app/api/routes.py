@@ -25,6 +25,23 @@ def _sse_pack(data: str) -> bytes:
     return f"data: {data}\n\n".encode("utf-8")
 
 
+def _sse_stream_chunks(text: str):
+    """
+    Stream by lines / blocks so the UI reads as paragraphs, not one word at a time.
+    Long lines without newlines are split into safe slices.
+    """
+    if not text:
+        yield ""
+        return
+    for raw in text.splitlines(keepends=True):
+        if len(raw) <= 220:
+            yield raw
+            continue
+        step = 160
+        for i in range(0, len(raw), step):
+            yield raw[i : i + step]
+
+
 @router.post("/chat")
 @limiter.limit("20/minute")
 async def chat(request: Request, payload: dict = Body(...)):
@@ -40,8 +57,8 @@ async def chat(request: Request, payload: dict = Body(...)):
         # For now we stream by words to satisfy SSE streaming requirement,
         # while keeping agent implementation simple and deterministic.
         text = await agent_chat(session_id=req.session_id, user_message=req.message)
-        for token in text.split():
-            yield _sse_pack(token + " ")
+        for chunk in _sse_stream_chunks(text):
+            yield _sse_pack(chunk)
             await asyncio.sleep(0)
         yield _sse_pack("[DONE]")
 

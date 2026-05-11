@@ -8,6 +8,22 @@ type Props = {
   isTyping?: boolean;
 };
 
+function AssistantContent({ content }: { content: string }) {
+  const blocks = content.split(/\n\n+/).filter((b) => b.length > 0);
+  if (blocks.length <= 1 && !content.includes("\n")) {
+    return <>{content}</>;
+  }
+  return (
+    <>
+      {blocks.map((block, i) => (
+        <p key={i} style={{ margin: i === 0 ? 0 : "12px 0 0", whiteSpace: "pre-wrap" }}>
+          {block}
+        </p>
+      ))}
+    </>
+  );
+}
+
 export default function Message({ msg, isTyping }: Props) {
   const isUser = msg.role === "user";
   const showTyping = Boolean(isTyping && msg.role === "assistant");
@@ -41,8 +57,10 @@ export default function Message({ msg, isTyping }: Props) {
             <span className="coach-pulse-dot" style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: "#818cf8", marginRight: 8, verticalAlign: "middle" }} />
             Думаю…
           </span>
-        ) : (
+        ) : isUser ? (
           msg.content
+        ) : (
+          <AssistantContent content={msg.content} />
         )}
       </div>
     </div>
