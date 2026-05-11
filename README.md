@@ -1,82 +1,81 @@
 # AI Interview Coach
 
-AI Interview Coach — приложение, которое анализирует вакансию, проводит mock-интервью и даёт обратную связь по ответам пользователя.
+**AI Interview Coach** — веб-приложение для подготовки к собеседованию: разбор вакансии (hh.ru или текст), генерация вопросов, пошаговая оценка ответов и mock-интервью в чате со стримингом ответа.
 
-## Live Demo
+## Скриншот
 
-- Frontend: http://13.60.91.191
-- Backend healthcheck: http://13.60.91.191/api/health
+![Интерфейс AI Interview Coach](docs/screenshot.png)
 
-## Возможности
+## Live-версия
 
-- анализ вакансии с hh.ru (API → fallback на HTML);
-- анализ текста вакансии (через LLM);
-- генерация вопросов под конкретную вакансию;
-- mock-интервью в чате;
-- streaming-ответы (SSE);
-- RAG по базе знаний интервью (Qdrant + embeddings);
-- итоговая обратная связь;
-- rate limiting на `/chat`;
-- prompt injection protection;
-- LangSmith tracing (переменные в `.env.example`).
+- **Приложение (frontend):** http://13.60.91.191  
+- **Проверка API:** http://13.60.91.191/api/health  
 
-## Стек
+## Локальный запуск (Docker Compose)
 
-- FastAPI
-- LangGraph + LangChain
-- OpenAI API
-- Qdrant
-- Next.js (TypeScript/React)
-- Docker + Docker Compose
-- AWS EC2 Ubuntu + Nginx
-- GitHub Actions
-
-## Локальный запуск (Docker)
+Один запуск поднимает **backend**, **frontend**, **Qdrant** и **Nginx** (прокси на порту 80).
 
 ```bash
-git clone https://github.com/<USERNAME>/project-26-capstone.git
+git clone https://github.com/Alenik007/project-26-capstone.git
 cd project-26-capstone
 cp .env.example .env
+# Укажите OPENAI_API_KEY и при необходимости остальные переменные в .env
 docker compose up --build
 ```
 
-Frontend:
+После старта контейнеров:
 
-- http://localhost:3000
+- **Интерфейс:** http://localhost/ (через Nginx)  
+- **Health API:** http://localhost/api/health  
 
-Backend:
+> На Windows порт **80** может быть занят или требовать прав администратора — в этом случае измените проброс порта в `docker-compose.yml` (например `"8080:80"`) и откройте http://localhost:8080/.
 
-- http://localhost:8000/health
+## Структура проекта
 
-## Переменные окружения
+| Путь | Назначение |
+|------|------------|
+| `backend/` | FastAPI-приложение: агент (LangGraph), инструменты (парсер hh, генерация вопросов, feedback), RAG, rate limit, защита от prompt injection |
+| `frontend/` | Next.js (React): чат со SSE, боковая панель быстрых действий, сохранение сессии в `localStorage` |
+| `nginx/` | Конфиг reverse proxy: `/` → frontend, `/api/` → backend |
+| `data/` | Исходные материалы для базы знаний (markdown) и скрипты индексации в Qdrant |
+| `docs/` | Доп. документация (например деплой), скриншот для README |
+| `docker-compose.yml` | Сборка и оркестрация всех сервисов |
+| `.github/workflows/` | CI: тесты backend, линт frontend |
 
-См. `.env.example`.
+## Технологии
 
-- `OPENAI_API_KEY`: ключ OpenAI
-- `OPENAI_MODEL`: модель (по умолчанию `gpt-4o-mini`)
-- `QDRANT_URL`: URL Qdrant (в docker-compose `http://qdrant:6333`)
-- `QDRANT_COLLECTION`: коллекция для базы знаний
-- `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`: LangSmith tracing
-- `BACKEND_CORS_ORIGINS`: CORS origins (можно через запятую)
-- `RATE_LIMIT_PER_MINUTE`: лимит запросов на IP (по ТЗ 20/min)
+- **Backend:** Python 3.11+, FastAPI, Uvicorn, LangChain / LangGraph, OpenAI API, Qdrant (векторное хранилище), SlowAPI (rate limiting), httpx  
+- **Frontend:** Next.js 15, React 19, TypeScript  
+- **Инфраструктура:** Docker, Docker Compose, Nginx; пример деплоя — AWS EC2 + Ubuntu  
+- **CI:** GitHub Actions  
+- **Опционально:** LangSmith (переменные в `.env.example`)
 
-## API
+## API (эндпоинты)
 
-### GET `/health`
+Базовый путь на сервере за Nginx: префикс **`/api`**, далее путь FastAPI без дублирования (прокси снимает префикс). Локально в контейнере backend слушает `:8000`.
 
-Проверка сервиса.
+### `GET /health`
 
-Ответ:
+Проверка работоспособности сервиса.
+
+**Ответ:** `200 OK`, тело JSON:
 
 ```json
 { "status": "ok" }
 ```
 
-### POST `/chat`
+### `POST /chat`
 
-Streaming чат с агентом.
+Диалог с агентом; ответ — **поток SSE** (Server-Sent Events).
 
-Пример запроса:
+**Тело запроса (JSON):**
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `session_id` | string | Идентификатор сессии (например UUID) |
+| `message` | string | Текст пользователя |
+
+**Пример:**
 
 ```json
 {
@@ -85,19 +84,19 @@ Streaming чат с агентом.
 }
 ```
 
-Формат ответа: Server-Sent Events (SSE)
+**Ответ:** `text/event-stream`, фрагменты вида `data: <текст>\n\n`, в конце `data: [DONE]\n\n`.
 
-```
-data: token
+**Ошибки:** `400` при обнаружении prompt injection в сообщении; лимит запросов — **20 запросов в минуту с одного IP** (настраивается).
 
-data: token
+### `GET /sessions/{session_id}`
 
-data: [DONE]
-```
+Возвращает сохранённую историю сообщений сессии (упрощённое in-memory хранилище на стороне backend).
 
-### GET `/sessions/{session_id}`
+**Ответ:** JSON с полями `session_id` и `messages` (массив объектов `role` / `content`).
 
-История сессии.
+## Переменные окружения
+
+См. **`.env.example`**: `OPENAI_API_KEY`, `OPENAI_MODEL`, `QDRANT_URL`, `QDRANT_COLLECTION`, CORS, лимиты, LangSmith и др.
 
 ## Тесты (backend)
 
@@ -108,84 +107,42 @@ pytest
 
 ## Deployment (AWS EC2 + Nginx)
 
-Обновление кода на сервере через Git: см. **[docs/git-deploy.md](docs/git-deploy.md)**.
+Обновление кода на сервере: **[docs/git-deploy.md](docs/git-deploy.md)**.
 
-Сервер:
-
-- IP: `13.60.91.191`
-- User: `ubuntu`
-
-### Запуск через Docker Compose
+Кратко:
 
 ```bash
-ssh -i ./evr_aws.pem ubuntu@13.60.91.191
+ssh -i <ваш-ключ.pem> ubuntu@13.60.91.191
 cd /home/ubuntu/project-26-capstone
 git pull origin main
-cp -n .env.example .env   # только если .env ещё нет
-nano .env               # вставьте OPENAI_API_KEY при первом запуске
+cp -n .env.example .env   # если .env ещё нет
+nano .env                 # OPENAI_API_KEY и др.
 docker compose up --build -d
 ```
 
-### Nginx reverse proxy
+Проксирование HTTP внутри стека делает контейнер **nginx** (конфиг в каталоге `nginx/`). При необходимости перед ним можно поставить отдельный Nginx на хосте (TLS, дополнительные правила) — это вне текущего `docker-compose.yml`.
 
-Пример `/etc/nginx/sites-available/interview-coach`:
+## Известные ограничения
 
-```nginx
-server {
-    listen 80;
-    server_name 13.60.91.191;
-
-    client_max_body_size 20M;
-
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-
-    location /api/ {
-        proxy_pass http://localhost:8000/;
-        proxy_http_version 1.1;
-
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-
-        proxy_buffering off;
-        proxy_cache off;
-
-        proxy_set_header Connection '';
-        chunked_transfer_encoding on;
-    }
-}
-```
-
-Маршрутизация:
-
-- `http://13.60.91.191/` → frontend
-- `http://13.60.91.191/api/*` → backend
-
-## Ограничения
-
-- hh.ru может блокировать парсинг;
-- качество feedback зависит от качества описания вакансии;
-- RAG-база знаний ограничена подготовленными markdown-файлами;
-- история сессии хранится упрощённо (in-memory);
-- без авторизации пользователей.
+- Парсинг вакансий с hh.ru может быть нестабилен при изменениях сайта или ограничениях по IP.  
+- Качество обратной связи зависит от полноты описания вакансии и от выбранной модели OpenAI.  
+- RAG ограничен подготовленными документами в `data/` и настройкой коллекции Qdrant.  
+- История сессии на backend **в памяти** — после перезапуска процесса сбрасывается (на фронте дублируется в `localStorage`).  
+- Нет регистрации пользователей и разграничения доступа.  
+- В `docker-compose.yml` для frontend может быть задан `NEXT_PUBLIC_API_URL` под конкретный хост деплоя; для чисто локальной работы убедитесь, что клиент ходит на тот же origin, что и UI (см. `frontend/lib/api.ts`).
 
 ## План развития
 
-- авторизация пользователей;
-- сохранение интервью в PostgreSQL;
-- экспорт отчёта в PDF;
-- поддержка LinkedIn и других job boards;
-- голосовой mock-interview;
-- аналитика прогресса пользователя;
-- расширение базы знаний.
+- Авторизация и личные кабинеты.  
+- Персистентное хранение сессий и отчётов (PostgreSQL или аналог).  
+- Экспорт итогового отчёта в PDF.  
+- Поддержка других площадок вакансий (LinkedIn и др.).  
+- Голосовой режим mock-интервью.  
+- Аналитика прогресса и сравнение проходов.  
+- Расширение и актуализация базы знаний для RAG.
 
+## Возможности продукта
+
+- Разбор вакансии по ссылке hh.ru (API и fallback на HTML) или по вставленному тексту.  
+- Генерация вопросов под вакансию, режим практики с оценкой каждого ответа и mock-интервью.  
+- Стриминг ответов (SSE), RAG по базе знаний, защита от prompt injection, rate limiting.
