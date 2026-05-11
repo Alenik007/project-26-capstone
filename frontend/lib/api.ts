@@ -5,10 +5,23 @@ export type ChatMessage = {
   content: string;
 };
 
+/**
+ * Base URL for API calls.
+ * - In the browser: if NEXT_PUBLIC_API_URL is an absolute http(s) URL, use it (local dev: http://localhost:8000).
+ *   Otherwise use same origin + /api so nginx reverse proxy works without rebuilding for each host/IP.
+ * - On server/build: fall back to env or localhost:8000.
+ */
 export function getApiBaseUrl(): string {
-  const url = process.env.NEXT_PUBLIC_API_URL;
-  if (!url) return "http://localhost:8000";
-  return url;
+  const env = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+
+  if (typeof window !== "undefined") {
+    if (env.startsWith("http://") || env.startsWith("https://")) {
+      return env;
+    }
+    return `${window.location.origin}/api`;
+  }
+
+  return env || "http://localhost:8000";
 }
 
 export async function* chatStream(opts: {

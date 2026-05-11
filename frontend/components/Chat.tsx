@@ -99,7 +99,7 @@ export default function Chat() {
             content:
               "Ошибка при запросе к backend.\n\n" +
               msg +
-              "\n\nПроверьте `NEXT_PUBLIC_API_URL` и доступность /api/chat.",
+              "\n\nПроверьте доступность `/api/chat` с этой же страницы или задайте `NEXT_PUBLIC_API_URL` (например `http://localhost:8000` для локальной разработки без nginx).",
           };
         }
         return copy;
