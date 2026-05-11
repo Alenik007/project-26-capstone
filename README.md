@@ -108,6 +108,8 @@ pytest
 
 ## Deployment (AWS EC2 + Nginx)
 
+Обновление кода на сервере через Git: см. **[docs/git-deploy.md](docs/git-deploy.md)**.
+
 Сервер:
 
 - IP: `13.60.91.191`
@@ -118,8 +120,9 @@ pytest
 ```bash
 ssh -i ./evr_aws.pem ubuntu@13.60.91.191
 cd /home/ubuntu/project-26-capstone
-cp .env.example .env
-nano .env   # вставьте OPENAI_API_KEY
+git pull origin main
+cp -n .env.example .env   # только если .env ещё нет
+nano .env               # вставьте OPENAI_API_KEY при первом запуске
 docker compose up --build -d
 ```
 
