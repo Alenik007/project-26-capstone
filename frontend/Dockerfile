@@ -5,6 +5,9 @@ RUN npm install
 
 FROM node:20-alpine AS builder
 WORKDIR /app
+# Слабые EC2 (1 GB RAM): без лимита Next.js часто уходит в swap и «висит» на часах
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_OPTIONS=--max-old-space-size=768
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
