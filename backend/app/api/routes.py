@@ -21,25 +21,17 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
-def _sse_pack(data: str) -> bytes:
-    return f"data: {data}\n\n".encode("utf-8")
-
-
-def _sse_stream_chunks(text: str):
+def _sse_pack_event(text: str) -> bytes:
     """
-    Stream by lines / blocks so the UI reads as paragraphs, not one word at a time.
-    Long lines without newlines are split into safe slices.
+    One SSE event: multiple `data:` lines (RFC 8895), blank line ends the event.
+    Newlines in the payload must NOT appear inside a single `data:` line, or
+    clients split frames on \\n\\n and corrupt the message.
     """
-    if not text:
-        yield ""
-        return
-    for raw in text.splitlines(keepends=True):
-        if len(raw) <= 220:
-            yield raw
-            continue
-        step = 160
-        for i in range(0, len(raw), step):
-            yield raw[i : i + step]
+    parts: list[str] = []
+    for line in (text or "").split("\n"):
+        parts.append(f"data: {line}\n")
+    parts.append("\n")
+    return "".join(parts).encode("utf-8")
 
 
 @router.post("/chat")
@@ -54,13 +46,10 @@ async def chat(request: Request, payload: dict = Body(...)):
         )
 
     async def event_stream() -> AsyncGenerator[bytes, None]:
-        # For now we stream by words to satisfy SSE streaming requirement,
-        # while keeping agent implementation simple and deterministic.
         text = await agent_chat(session_id=req.session_id, user_message=req.message)
-        for chunk in _sse_stream_chunks(text):
-            yield _sse_pack(chunk)
-            await asyncio.sleep(0)
-        yield _sse_pack("[DONE]")
+        yield _sse_pack_event(text)
+        await asyncio.sleep(0)
+        yield _sse_pack_event("[DONE]")
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

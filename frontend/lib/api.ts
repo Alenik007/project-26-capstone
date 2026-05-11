@@ -47,26 +47,29 @@ export async function* chatStream(opts: {
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    // SSE frames end with \n\n
-    let idx: number;
-    while ((idx = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
+      // SSE frames end with \n\n
+      let idx: number;
+      while ((idx = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
 
-      const lines = frame.split("\n");
-      for (const line of lines) {
-        if (line.startsWith("data:")) {
-          const data = line.slice(5).trimStart();
-          if (data === "[DONE]") return;
-          yield data;
+        const lines = frame.split("\n");
+        const dataParts: string[] = [];
+        for (const line of lines) {
+          if (line.startsWith("data:")) {
+            dataParts.push(line.slice(5).trimStart());
+          }
         }
+        if (dataParts.length === 0) continue;
+        const merged = dataParts.join("\n");
+        if (merged === "[DONE]") return;
+        yield merged;
       }
     }
-  }
 }
 
