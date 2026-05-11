@@ -104,15 +104,25 @@ def _wants_questions(lower: str) -> bool:
 
 
 def _wants_finish(lower: str) -> bool:
+    """Явное намерение завершить сценарий (кнопка сайдбара / короткая команда). Без общих слов «итог» в ответах на вопросы."""
     if "итоговую обратную связь" in lower or "итоговая обратная связь" in lower:
         return True
     if ("отчёт" in lower or "отчет" in lower) and any(
-        x in lower for x in ("дай", "сформируй", "подготовь", "заверш", "заверши", "итог")
+        x in lower
+        for x in (
+            "дай итоговый отч",
+            "дай итогов",
+            "сформируй итоговый отч",
+            "сформируй отч",
+            "подготовь итоговый отч",
+            "подготовь отч",
+        )
     ):
         return True
     if not any(x in lower for x in ("заверш", "заверши", "законч", "останов", "финиш")):
         return False
-    return any(x in lower for x in ("интерв", "mock", "собесед", "обратн", "отчёт", "отчет", "итог"))
+    # Не используем подстроку «итог» — она часто встречается в ответах («в итоге», «итоги»).
+    return any(x in lower for x in ("интерв", "mock", "собесед", "обратн", "отчёт", "отчет"))
 
 
 def _vacancy_context_text(vacancy: dict) -> str:
@@ -275,6 +285,48 @@ async def chat(session_id: str, user_message: str) -> str:
         }
         vacancy = state["vacancy"]
 
+    qs = state.get("interview_questions") or []
+    idx = int(state.get("current_question_index") or 0)
+    qa_active = bool(state.get("interview_active") or state.get("practice_active"))
+
+    # Пока идёт mock/практика, длинный ответ не должен ошибочно трактоваться как «завершить и отчёт»
+    # (в тексте часто бывают «завершил», «отчёт», «в итоге»).
+    if qa_active and qs and idx < len(qs):
+        wants_finish = _wants_finish(lower)
+        if (not wants_finish or len(user_message.strip()) > 160) and not _wants_questions(lower) and not _wants_start_mock(lower):
+            q = qs[idx]["question"]
+            ctx = _vacancy_context_text(vacancy)
+            fb_raw = await feedback_tool.ainvoke({"question": q, "answer": user_message, "vacancy_context": ctx})
+            fb = json.loads(fb_raw)
+            state["answers"].append({"question": q, "answer": user_message})
+            state["feedback"].append(fb)
+            idx += 1
+            state["current_question_index"] = idx
+            if idx < len(qs):
+                next_q = qs[idx]["question"]
+                assistant_text = (
+                    "### Оценка ответа\n\n"
+                    f"- **Балл:** {fb.get('score', 0)}/10\n"
+                    f"- **Сильные стороны:** {', '.join(fb.get('strengths', []))}\n"
+                    f"- **Зоны роста:** {', '.join(fb.get('weaknesses', []))}\n\n"
+                    f"**Улучшенный вариант ответа:**\n{fb.get('improved_answer', '—')}\n\n"
+                    f"---\n\n### Следующий вопрос ({idx+1}/{len(qs)})\n\n{next_q}"
+                )
+            else:
+                state["interview_active"] = False
+                state["practice_active"] = False
+                scores = [int(x.get("score", 0)) for x in state.get("feedback", []) if isinstance(x, dict)]
+                avg = round(sum(scores) / len(scores), 1) if scores else 0
+                assistant_text = (
+                    "### Серия вопросов завершена\n\n"
+                    f"- **Средний балл:** {avg}/10\n"
+                    f"- **Всего оценок:** {len(scores)}\n\n"
+                    "**Рекомендации:** повторите темы из «зон роста» и добавьте 1–2 кейса по STAR.\n\n"
+                    "Можно нажать **«Завершить и отчёт»** для сводки или сгенерировать новый список вопросов."
+                )
+            state["messages"].append({"role": "assistant", "content": assistant_text})
+            return assistant_text
+
     if _wants_finish(lower):
         state["interview_active"] = False
         state["practice_active"] = False
@@ -338,44 +390,6 @@ async def chat(session_id: str, user_message: str) -> str:
         assistant_text = f"### Mock-интервью\n\n**Вопрос 1/{len(qs)}:**\n\n{q}"
         state["messages"].append({"role": "assistant", "content": assistant_text})
         return assistant_text
-
-    qs = state.get("interview_questions") or []
-    idx = int(state.get("current_question_index") or 0)
-    qa_active = state.get("interview_active") or state.get("practice_active")
-    if qa_active and qs and idx < len(qs):
-        if not _wants_questions(lower) and not _wants_start_mock(lower):
-            q = qs[idx]["question"]
-            ctx = _vacancy_context_text(vacancy)
-            fb_raw = await feedback_tool.ainvoke({"question": q, "answer": user_message, "vacancy_context": ctx})
-            fb = json.loads(fb_raw)
-            state["answers"].append({"question": q, "answer": user_message})
-            state["feedback"].append(fb)
-            idx += 1
-            state["current_question_index"] = idx
-            if idx < len(qs):
-                next_q = qs[idx]["question"]
-                assistant_text = (
-                    "### Оценка ответа\n\n"
-                    f"- **Балл:** {fb.get('score', 0)}/10\n"
-                    f"- **Сильные стороны:** {', '.join(fb.get('strengths', []))}\n"
-                    f"- **Зоны роста:** {', '.join(fb.get('weaknesses', []))}\n\n"
-                    f"**Улучшенный вариант ответа:**\n{fb.get('improved_answer', '—')}\n\n"
-                    f"---\n\n### Следующий вопрос ({idx+1}/{len(qs)})\n\n{next_q}"
-                )
-            else:
-                state["interview_active"] = False
-                state["practice_active"] = False
-                scores = [int(x.get("score", 0)) for x in state.get("feedback", []) if isinstance(x, dict)]
-                avg = round(sum(scores) / len(scores), 1) if scores else 0
-                assistant_text = (
-                    "### Серия вопросов завершена\n\n"
-                    f"- **Средний балл:** {avg}/10\n"
-                    f"- **Всего оценок:** {len(scores)}\n\n"
-                    "**Рекомендации:** повторите темы из «зон роста» и добавьте 1–2 кейса по STAR.\n\n"
-                    "Можно нажать **«Завершить и отчёт»** для сводки или сгенерировать новый список вопросов."
-                )
-            state["messages"].append({"role": "assistant", "content": assistant_text})
-            return assistant_text
 
     # Default: let ReAct agent decide (autonomous) with available tools.
     agent = get_agent()
